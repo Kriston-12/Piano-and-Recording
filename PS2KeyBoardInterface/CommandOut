@@ -1,0 +1,240 @@
+`default_nettype none
+
+module DataOut (
+	clk,
+	reset,
+	command,
+	timeToSend,
+	posClock,
+	negClock,
+	ps2Clk,
+ 	ps2Data,
+
+	commandSent,
+	error_communication_timed_out
+);
+
+
+parameter	clkfor101us	= 5050;    // 50million / 101e-9, it could other values but this value is guaranteed by ut
+parameter	bitsfor101us = 13;
+parameter	counterfor101us	= 13'h0001;
+
+parameter	clockfor2ms	= 100000;
+parameter	bitsfor2ms = 17;
+parameter	counterfor2ms = 17'h00001;
+
+parameter	clockfor15ms = 750000;
+parameter	bitsfor15ms = 20;
+parameter	counterfor15ms = 20'h00001;
+
+
+input wire clk;
+input wire reset;
+
+input wire[7:0] command;
+input wire S;
+
+input	wire posClock;
+input	wire negClock;
+
+inout	wire ps2Clk;
+inout	wire ps2Data;
+
+output reg commandSent;
+output reg error_communication_timed_out;  // assume this is useless
+
+parameter	stateIdle = 3'd0,
+			startSign = 3'd1,
+			waitForClock = 3'd2,
+			transmitStart = 3'd3,
+			transmitStop = 3'd4,
+			receriveACK	= 3'd5,
+			commandSent	= 3'd6,
+			PS2_STATE_7_TRANSMISSION_ERROR = 3'd7;
+
+reg	[3:0] cur_bit;
+reg	[8:0] ps2Command;
+
+reg	[bitsfor101us:1] commandReceiveCounter;
+
+reg	[bitsfor15ms] waitingCounter;
+
+reg	[bitsfor2ms] transfer_counter;
+
+
+reg	[2:0] ps2Transmitter;
+reg	[2:0] markPs2Transmit;
+//FSM
+always @(posedge clk)
+begin
+	if (reset)
+		markPs2Transmit <= stateIdle;
+	else
+		markPs2Transmit <= ps2Transmitter;
+end
+
+always @(*)
+begin
+	// Defaults
+	ps2Transmitter = stateIdle;
+
+    case (markPs2Transmit)
+	stateIdle:
+		begin
+			if (S)
+				ps2Transmitter = startSign;
+			else
+				ps2Transmitter = stateIdle;
+		end
+
+	startSign:
+		begin
+			if (commandReceiveCounter == clkfor101us) // signal of receiving command and start
+				ps2Transmitter = waitForClock;
+			else
+				ps2Transmitter = startSign;
+		end
+
+	waitForClock:
+		begin
+			if (negClock)
+				ps2Transmitter = transmitStart;
+			// else if (waitingCounter == clockfor15ms) 				
+			// 	ps2Transmitter = PS2_STATE_7_TRANSMISSION_ERROR;
+			else
+				ps2Transmitter = waitForClock;
+		end
+	transmitStart:
+		begin
+			if ((cur_bit == 4'd8) && (negClock))
+				ps2Transmitter = transmitStop 			
+			// else if (transfer_counter == clockfor2ms)				
+			// 	ps2Transmitter = PS2_STATE_7_TRANSMISSION_ERROR;
+			else
+				ps2Transmitter = transmitStart;
+		end
+	transmitStop 		
+		begin
+			if (negClock)
+				ps2Transmitter = receriveACK;
+			// else if (transfer_counter == clockfor2ms)				
+			// 	ps2Transmitter = PS2_STATE_7_TRANSMISSION_ERROR;
+			else
+				ps2Transmitter = transmitStop 		
+		end
+
+	receriveACK:
+		begin
+			if (posClock)
+				ps2Transmitter = commandSent;			
+			// else if (transfer_counter == clockfor2ms)				
+			// 	ps2Transmitter = PS2_STATE_7_TRANSMISSION_ERROR;
+			else
+				ps2Transmitter = receriveACK;
+		end
+
+	commandSent:		
+		begin
+			if (S == 1'b0)
+				ps2Transmitter = stateIdle;
+			else
+				ps2Transmitter = commandSent;		
+		end
+
+	// PS2_STATE_7_TRANSMISSION_ERROR:
+	// 	begin
+	// 		if (S == 1'b0)
+	// 			ps2Transmitter = stateIdle;
+	// 		else
+	// 			ps2Transmitter = PS2_STATE_7_TRANSMISSION_ERROR;
+	// 	end
+	default:
+		begin
+			ps2Transmitter = stateIdle;
+		end
+	endcase
+end
+
+//Datapath
+always @(posedge clk)
+begin
+	if (reset)
+		ps2Command <= 0;
+	else if (markPs2Transmit == stateIdle)
+		ps2Command <= {command = (command) ? 1'b0 : 1'b1, command};
+end
+
+always @(posedge clk)
+begin
+	if (reset)
+		commandReceiveCounter <= 0;  // set counter to 0
+	else if ((markPs2Transmit == startSign) && (commandReceiveCounter != clkfor101us))
+		commandReceiveCounter <= commandReceiveCounter + counterfor101us;
+	else if (markPs2Transmit != startSign)
+		commandReceiveCounter <= 0;
+end
+
+always @(posedge clk)
+begin
+	if (reset)
+		waitingCounter <= 0;
+	else if ((markPs2Transmit == waitForClock) && (waitingCounter != clockfor15ms))
+		waitingCounter <= waitingCounter + counterfor15ms 
+	else if (markPs2Transmit != waitForClock)
+		waitingCounter <= 0;
+end
+
+always @(posedge clk)
+begin
+	if (reset)
+		transfer_counter <= 0;
+	else
+	begin
+		if ((markPs2Transmit == transmitStart) || (markPs2Transmit == transmitStop) || (markPs2Transmit == receriveACK))
+		begin
+			if (transfer_counter != clockfor2ms)				
+				transfer_counter <= transfer_counter + counterfor2ms;
+		end
+		else
+			transfer_counter <= 0;
+	end
+end
+
+always @(posedge clk)
+begin
+	if (reset)
+		cur_bit <= 0;
+	else if ((markPs2Transmit == transmitStart) && negClock)
+		cur_bit <= cur_bit + 1;
+	else if (markPs2Transmit != transmitStart)
+		cur_bit <= 0;
+end
+
+always @(posedge clk)
+begin
+	if (reset)
+		commandSent <= 0;
+	else if (markPs2Transmit == commandSent)		
+		commandSent <= 1;
+	else if (!S)
+		commandSent <= 0;
+end
+
+// always @(posedge clk)
+// begin
+// 	if (reset)
+// 		error_communication_timed_out <= 1'b0;
+// 	else if (markPs2Transmit == PS2_STATE_7_TRANSMISSION_ERROR)
+// 		error_communication_timed_out <= 1'b1;
+// 	else if (S == 1'b0)
+// 		error_communication_timed_out <= 1'b0;
+// end
+
+assign ps2Clk = (markPs2Transmit == startSign) ? 1'b0 : 1'bz;
+
+assign ps2Data = (markPs2Transmit == transmitStart) 
+? ps2Command[cur_bit] : (markPs2Transmit == waitForClock) 
+? 1'b0 : ((markPs2Transmit == startSign) && (commandReceiveCounter[bitsfor101us])) ? 1'b0 : 1'bz;
+
+endmodule
+
