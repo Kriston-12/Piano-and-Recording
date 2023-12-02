@@ -1,0 +1,146 @@
+`default_nettype none
+
+module DataIn (
+
+	clk,
+	reset,
+	dataWait,
+	receivingData,
+	clkpos,
+	ps2neg,
+	ps2_data,
+	received_data,
+	enableReData			
+);
+
+input	wire	reset;
+input	wire	clk;
+input	wire	clkpos;
+input	wire	ps2neg;
+
+input	wire 	dataWait;
+input	wire	receivingData;
+input	wire 	ps2_data;
+
+
+output reg	[7:0] received_data;
+output reg enableReData;
+
+
+localparam	PS2Idle = 3'h0,
+			WaitForData	= 3'h1,
+			DataIn	= 3'h2,
+			SameIn = 3'h3,
+			StopIn	= 3'h4;
+
+reg	[3:0]	dataCount;
+reg	[7:0]	shiftReg;
+reg	[2:0]	ps2receiver;
+reg	[2:0]	recerver;
+
+always @(posedge clk)
+begin
+	if (reset == 1'b1)
+		recerver <= PS2Idle;
+	else
+		recerver <= ps2receiver;
+end
+
+always @(*)
+begin
+	ps2receiver = PS2Idle;
+
+    case (recerver)
+	PS2Idle:
+		begin
+			if (dataWait && !enableReData)
+				ps2receiver = WaitForData;
+			else if (receivingData && !enableReData)
+				ps2receiver = DataIn;
+			else
+				ps2receiver = PS2Idle;
+		end
+
+
+	WaitForData:
+		begin
+			if (!ps2_data && clkpos)
+				ps2receiver = DataIn;
+			else if (!dataWait)
+				ps2receiver = PS2Idle;
+			else
+				ps2receiver = WaitForData;
+		end
+
+
+	DataIn:
+		begin
+			if (dataCount == 3'd7 && clkpos)
+				ps2receiver = SameIn;
+			else
+				ps2receiver = DataIn;
+		end
+
+	SameIn:
+		begin
+			if (clkpos == 1'b1)
+				ps2receiver = StopIn;
+			else
+				ps2receiver = SameIn;
+		end
+
+	// we need a stop state to determine that this is the starting point of receiving data, other wise it won't know when to stop reading and start next circle
+	StopIn:
+		begin
+			if (clkpos == 1'b1)
+				ps2receiver = PS2Idle;
+			else
+				ps2receiver = StopIn;
+		end
+	default:
+		begin
+			ps2receiver = PS2Idle;
+		end
+	endcase
+end
+
+
+//Data path
+always @(posedge clk)
+begin
+	if (reset) 
+		dataCount <= 3'h0;
+	else if (recerver == DataIn && clkpos)
+		dataCount <= dataCount + 3'h1;
+	else if (recerver != DataIn)
+		dataCount <= 3'h0;
+end
+
+always @(posedge clk)
+begin
+	if (reset == 1'b1)
+		shiftReg <= 0;
+	else if (recerver == DataIn && clkpos)
+		shiftReg <= {ps2_data, shiftReg[7:1]}; // shift the rightmost bit to the left, making consistant signal
+end 
+
+always @(posedge clk)
+begin
+	if (reset)
+		received_data <= 0;
+	else if (recerver == StopIn)
+		received_data <= shiftReg;
+end
+
+always @(posedge clk)
+begin
+	if (reset)
+		enableReData <= 1'b0;
+	else if (recerver == StopIn && clkpos)  // when recerver gets from 1 to 0, marking as the starting operation time
+		enableReData <= 1'b1;
+	else
+		enableReData <= 1'b0;
+end
+
+endmodule
+
